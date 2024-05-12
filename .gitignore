@@ -171,3 +171,6 @@ Thumbs.db
 .RData
 .Rhistory
 
+# results
+GNNSubNet/datasets
+TCGA
