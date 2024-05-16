@@ -155,6 +155,23 @@ class GNNExplainer(torch.nn.Module):
 
         return loss
 
+    def __loss_singular__(self, log_logits, edge_mask_val, node_mask_val, pred_label):
+        loss = -log_logits[0, pred_label]
+
+        m = edge_mask_val.sigmoid()
+        edge_reduce = getattr(torch, self.coeffs['edge_reduction'])
+        loss = loss + self.coeffs['edge_size'] * edge_reduce(m)
+        ent = -m * torch.log(m + EPS) - (1 - m) * torch.log(1 - m + EPS)
+        loss = loss + self.coeffs['edge_ent'] * ent.mean()
+
+        m = node_mask_val.sigmoid()
+        node_feat_reduce = getattr(torch, self.coeffs['node_feat_reduction'])
+        loss = loss + self.coeffs['node_feat_size'] * node_feat_reduce(m)
+        ent = -m * torch.log(m + EPS) - (1 - m) * torch.log(1 - m + EPS)
+        loss = loss + self.coeffs['node_feat_ent'] * ent.mean()
+
+        return loss
+
     def __to_log_prob__(self, x: torch.Tensor) -> torch.Tensor:
         x = x.log_softmax(dim=-1) if self.return_type == 'raw' else x
         x = x.log() if self.return_type == 'prob' else x
@@ -748,9 +765,9 @@ class GNNExplainer(torch.nn.Module):
                 LOGITS2.append(-log_logits[0, :])    
 
         self.to(x.device)
-        
-        n_nodes = dataset[0].node_features.size()[0]
+        self.__set_masks__(dataset[0].node_features, dataset[0].edge_mat)
 
+        n_nodes = dataset[0].node_features.size()[0]
         
         #optimizer = torch.optim.Adam([self.edge_mask],
         #                             lr=self.lr)                                  
@@ -758,14 +775,15 @@ class GNNExplainer(torch.nn.Module):
         # all nodes belong to same graph
         batch = torch.zeros(x.shape[0], dtype=int, device=x.device)
 
-        id = np.random.randint(len(dataset))
+        node_mask = list()
+        edge_mask = list()
 
-        optimizer = torch.optim.Adam([self.edge_mask[id], self.node_feat_mask[id]], lr=self.lr)
+        torch.autograd.set_detect_anomaly = True
 
-        losses = self.optimize_loss_for_mask(copy(dataset[id]), PRED[id], self.forward, self.epochs, optimizer)
-
-        np.savetxt('C:/Users/elena/DELFT/assignments/RP/GNN-SubNet_modified/GNNSubNet/datasets/loss_values.csv', losses,
-                   delimiter=',', fmt='%d')
+        for node_id in range(n_nodes):
+            (node_mask_singular, edge_mask_singular) = self.optimize_loss_for_mask(copy(dataset), PRED, self.forward, self.epochs, node_id)
+            node_mask.append(node_mask_singular)
+            edge_mask.append(edge_mask_singular)
 
         # for epoch in range(1, self.epochs + 1):
         #     loss_xx  = 0
@@ -787,48 +805,68 @@ class GNNExplainer(torch.nn.Module):
             # loss_xx.backward()
             # optimizer.step()
          
-        return self.node_feat_mask.view(-1, 1).detach() #self.edge_mask.detach().sigmoid()
+        return node_mask #self.node_feat_mask.view(-1, 1).detach() #self.edge_mask.detach().sigmoid()
 
-    def forward(self, data):
+    def forward(self, data, node_id, node_mask_value):
         """
         Defines the following function used in the forward pass of the gradient descent algorithm:
-                                        log P(Y = y|G, X = X x sigmoid(N)
-        Where N is the learned node feature mask. X x sigmoid(N) is "the row-wise multiplication of X, where the rows
-        reflect the nodes of a graph and the columns are representing the node features." (Pfeifer et al, 2022)
+                                        log P(Y = y|G, X = X x sigmoid(N))
+        Where N is the learned node feature mask FOR A SINGLE NODE. X x sigmoid(N) is "the row-wise multiplication of X,
+        where the rows reflect the nodes of a graph and the columns are representing the node features." (Pfeifer et al,
+        2022)
         """
-        h = data.node_features * self.node_feat_mask.sigmoid()
-        data.node_features = h
+        h = data.node_features[node_id] * node_mask_value.sigmoid()
+        data.node_features[node_id] = h
         out = self.model([data])
         log_logits = self.__to_log_prob__(out)
         return log_logits
 
-    def optimize_loss_for_mask(self, data, pred, forward_fct, no_iterations, optimizer):
+    def optimize_loss_for_mask(self, data, pred, forward_fct, no_iterations, node_id, sampleSize = 10):
         """
         Optimizes the node feature mask via gradient descent with respect to a specified forward function.
 
         Args:
-            data: the sample for which to optimize the node feature mask
-            pred: the prediction corresponding to the sample
+            data: the dataset for which to optimize the node feature mask (should be a set of S2VGraphs)
+            pred: the prediction corresponding to the dataset
             forward_fct: the forward function to be used for a specific datapoint
             no_iterations: the number of iterations of the algorithm
-            optimizer: used to update the
         """
-        # Initialize the feature mask to a random value
-        self.__set_masks__(data.node_features, data.edge_mat)
 
-        optimizer.zero_grad()
+        # Initialize the values for a single node to be used in Gradient Descent
+        no_of_nodes = data[0].node_features.size()[0]
+
+        node_mask_value = torch.randn(1) * 0.1
+
+        std = torch.nn.init.calculate_gain('relu') * sqrt(2.0 / (2 * no_of_nodes))
+        edge_mask_value = torch.randn(1) * std
+
+        # Initialize the node mask to a random value
+        optimizer = torch.optim.Adam([node_mask_value, edge_mask_value], lr = self.lr)
 
         # Used for plotting the loss values
         losses = []
 
-        for i in range(no_iterations):
-            # Call the forward function on the provided data
-            forward_val = forward_fct(data)
+        for epoch in range(1, no_iterations + 1):
 
-            # Compute the loss
-            loss = self.__loss__(-1, forward_val, pred)
+            loss = 0
 
-            losses.append(loss.numpy())
+            # Redo the sampling process every 50 epochs
+            if epoch % 50 == 1:
+                ids = np.random.randint(len(data), size = sampleSize)
+
+            # Reset the gradients
+            optimizer.zero_grad()
+
+            for sample_id in ids:
+                sample = data[sample_id]
+                sample_copy = copy(sample)
+
+                # Call the forward function on the provided data
+                forward_val = forward_fct(sample_copy, node_id, node_mask_value)
+
+                loss_per_sample = self.__loss_singular__(forward_val, edge_mask_value, node_mask_value, pred[node_id])
+
+                loss = loss + loss_per_sample
 
             # Perform backpropagation
             loss.backward()
@@ -836,13 +874,12 @@ class GNNExplainer(torch.nn.Module):
             # Update the parameters to be changed
             optimizer.step()
 
-            # Reset the gradients
-            optimizer.zero_grad()
+            losses.append(loss.detach().numpy())
 
         np.savetxt('C:/Users/elena/DELFT/assignments/RP/GNN-SubNet_modified/GNNSubNet/datasets/loss_values.csv', losses,
                    delimiter=',', fmt='%d')
 
-        return losses
+        return (node_mask_value, edge_mask_value)
 
     def explain_graph_modified_s2v_API(self, dataset, param, node_mask=False):
 
