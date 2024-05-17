@@ -155,14 +155,8 @@ class GNNExplainer(torch.nn.Module):
 
         return loss
 
-    def __loss_singular__(self, log_logits, edge_mask_val, node_mask_val, pred_label):
+    def __loss_singular__(self, log_logits, node_mask_val, pred_label):
         loss = -log_logits[0, pred_label]
-
-        m = edge_mask_val.sigmoid()
-        edge_reduce = getattr(torch, self.coeffs['edge_reduction'])
-        loss = loss + self.coeffs['edge_size'] * edge_reduce(m)
-        ent = -m * torch.log(m + EPS) - (1 - m) * torch.log(1 - m + EPS)
-        loss = loss + self.coeffs['edge_ent'] * ent.mean()
 
         m = node_mask_val.sigmoid()
         node_feat_reduce = getattr(torch, self.coeffs['node_feat_reduction'])
@@ -594,7 +588,9 @@ class GNNExplainer(torch.nn.Module):
             sampSize = 10
             if epoch%50==1: 
                 ids  = np.random.randint(len(dataset), size=sampSize)
-                
+
+            losses = list()
+
             optimizer.zero_grad()
             for dd in ids: 
                 data = dataset[dd]
@@ -612,10 +608,14 @@ class GNNExplainer(torch.nn.Module):
                 #print(LOGITS2[dd])
                 #print(log_logits)
                 #print(out)
-                loss_xx = loss_xx + loss_hit 
+                loss_xx = loss_xx + loss_hit
+            losses.append(loss_xx)
             loss_xx.backward()
             optimizer.step()
-         
+
+        np.savetxt('C:/Users/elena/DELFT/assignments/RP/GNN-SubNet_modified/GNNSubNet/datasets/loss_values.csv', losses,
+                   delimiter=',', fmt='%d')
+
         return self.node_feat_mask.view(-1,1).detach() #self.edge_mask.detach().sigmoid()
             
     def explain_graph_modified_chebnet(self, dataset, param):
@@ -776,14 +776,20 @@ class GNNExplainer(torch.nn.Module):
         batch = torch.zeros(x.shape[0], dtype=int, device=x.device)
 
         node_mask = list()
-        edge_mask = list()
 
         torch.autograd.set_detect_anomaly = True
 
+        all_losses = list()
+
+        # (losses, node_mask_singular) = self.optimize_loss_for_mask(copy(dataset), PRED, self.forward, self.epochs, 0)
+
         for node_id in range(n_nodes):
-            (node_mask_singular, edge_mask_singular) = self.optimize_loss_for_mask(copy(dataset), PRED, self.forward, self.epochs, node_id)
+            (losses, node_mask_singular) = self.optimize_loss_for_mask(copy(dataset), PRED, self.forward, self.epochs, node_id)
             node_mask.append(node_mask_singular)
-            edge_mask.append(edge_mask_singular)
+            all_losses.append(losses)
+
+        # np.savetxt('C:/Users/elena/DELFT/assignments/RP/GNN-SubNet_modified/GNNSubNet/datasets/loss_values.csv', all_losses,
+        #            delimiter=',')
 
         # for epoch in range(1, self.epochs + 1):
         #     loss_xx  = 0
@@ -805,7 +811,7 @@ class GNNExplainer(torch.nn.Module):
             # loss_xx.backward()
             # optimizer.step()
          
-        return node_mask #self.node_feat_mask.view(-1, 1).detach() #self.edge_mask.detach().sigmoid()
+        return (node_mask, all_losses) #self.node_feat_mask.view(-1, 1).detach() #self.edge_mask.detach().sigmoid()
 
     def forward(self, data, node_id, node_mask_value):
         """
@@ -816,6 +822,7 @@ class GNNExplainer(torch.nn.Module):
         2022)
         """
         h = data.node_features[node_id] * node_mask_value.sigmoid()
+        data.node_features = torch.zeros_like(data.node_features)
         data.node_features[node_id] = h
         out = self.model([data])
         log_logits = self.__to_log_prob__(out)
@@ -835,23 +842,23 @@ class GNNExplainer(torch.nn.Module):
         # Initialize the values for a single node to be used in Gradient Descent
         no_of_nodes = data[0].node_features.size()[0]
 
-        node_mask_value = torch.randn(1) * 0.1
+        node_mask_value = torch.nn.Parameter(torch.randn(1) * 0.1)
 
-        std = torch.nn.init.calculate_gain('relu') * sqrt(2.0 / (2 * no_of_nodes))
-        edge_mask_value = torch.randn(1) * std
+        # std = torch.nn.init.calculate_gain('relu') * sqrt(2.0 / (2 * no_of_nodes))
+        # edge_mask_value = torch.randn(1) * std
 
         # Initialize the node mask to a random value
-        optimizer = torch.optim.Adam([node_mask_value, edge_mask_value], lr = self.lr)
+        optimizer = torch.optim.Adam([node_mask_value], lr = self.lr)
 
         # Used for plotting the loss values
-        losses = []
+        losses = list()
 
-        for epoch in range(1, no_iterations + 1):
+        for epoch in range(0, no_iterations):
 
             loss = 0
 
             # Redo the sampling process every 50 epochs
-            if epoch % 50 == 1:
+            if epoch % 50 == 0:
                 ids = np.random.randint(len(data), size = sampleSize)
 
             # Reset the gradients
@@ -864,22 +871,21 @@ class GNNExplainer(torch.nn.Module):
                 # Call the forward function on the provided data
                 forward_val = forward_fct(sample_copy, node_id, node_mask_value)
 
-                loss_per_sample = self.__loss_singular__(forward_val, edge_mask_value, node_mask_value, pred[node_id])
+                loss_per_sample = self.__loss_singular__(forward_val, node_mask_value, pred[node_id])
 
                 loss = loss + loss_per_sample
 
             # Perform backpropagation
             loss.backward()
 
+            print(loss)
+
             # Update the parameters to be changed
             optimizer.step()
 
-            losses.append(loss.detach().numpy())
+            losses.append(loss)
 
-        np.savetxt('C:/Users/elena/DELFT/assignments/RP/GNN-SubNet_modified/GNNSubNet/datasets/loss_values.csv', losses,
-                   delimiter=',', fmt='%d')
-
-        return (node_mask_value, edge_mask_value)
+        return (losses, node_mask_value)
 
     def explain_graph_modified_s2v_API(self, dataset, param, node_mask=False):
 
