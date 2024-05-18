@@ -159,10 +159,9 @@ class GNNExplainer(torch.nn.Module):
         loss = -log_logits[0, pred_label]
 
         m = node_mask_val.sigmoid()
-        node_feat_reduce = getattr(torch, self.coeffs['node_feat_reduction'])
-        loss = loss + self.coeffs['node_feat_size'] * node_feat_reduce(m)
+        loss = loss + self.coeffs['node_feat_size'] * m
         ent = -m * torch.log(m + EPS) - (1 - m) * torch.log(1 - m + EPS)
-        loss = loss + self.coeffs['node_feat_ent'] * ent.mean()
+        loss = loss + self.coeffs['node_feat_ent'] * ent
 
         return loss
 
@@ -781,9 +780,7 @@ class GNNExplainer(torch.nn.Module):
 
         all_losses = list()
 
-        # (losses, node_mask_singular) = self.optimize_loss_for_mask(copy(dataset), PRED, self.forward, self.epochs, 0)
-
-        for node_id in range(n_nodes):
+        for node_id in range(1):
             (losses, node_mask_singular) = self.optimize_loss_for_mask(copy(dataset), PRED, self.forward, self.epochs, node_id)
             node_mask.append(node_mask_singular)
             all_losses.append(losses)
@@ -840,7 +837,7 @@ class GNNExplainer(torch.nn.Module):
         """
 
         # Initialize the values for a single node to be used in Gradient Descent
-        no_of_nodes = data[0].node_features.size()[0]
+        # no_of_nodes = data[0].node_features.size()[0]
 
         node_mask_value = torch.nn.Parameter(torch.randn(1) * 0.1)
 
