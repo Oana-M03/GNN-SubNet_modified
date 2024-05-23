@@ -613,9 +613,6 @@ class GNNExplainer(torch.nn.Module):
             loss_xx.backward()
             optimizer.step()
 
-        np.savetxt('C:/Users/elena/DELFT/assignments/RP/GNN-SubNet_modified/GNNSubNet/datasets/loss_values.csv', losses,
-                   delimiter=',', fmt='%d')
-
         return self.node_feat_mask.view(-1,1).detach() #self.edge_mask.detach().sigmoid()
             
     def explain_graph_modified_chebnet(self, dataset, param):
@@ -746,7 +743,16 @@ class GNNExplainer(torch.nn.Module):
 
         return self.node_feat_mask.view(-1,1).detach() #self.edge_mask.detach().sigmoid()
     
-    def explain_graph_modified_s2v(self, dataset, param):
+    def explain_graph_modified_s2v(self, dataset, param, gnn_subnet = False):
+        """
+        Runs the explainer on the input dataset and generates a global explanation, i.e. a node mask that takes into
+        account all graph instances of the dataset.
+
+        Args:
+            dataset: the input data to run the explainer on
+            gnn_subnet: specifies whether to run the original algorithm (GNN-SubNet) or its modification
+        """
+
         self.model.eval()
         self.__clear_masks__()    
 
@@ -766,37 +772,94 @@ class GNNExplainer(torch.nn.Module):
 
         self.to(x.device)
 
-        n_nodes = dataset[0].node_features.size()[0]
-        
-        #optimizer = torch.optim.Adam([self.edge_mask],
-        #                             lr=self.lr)                                  
+        if gnn_subnet:
+            # Run GNN-SubNet
 
-        # all nodes belong to same graph
-        #batch = torch.zeros(x.shape[0], dtype=int, device=x.device)
+            self.__set_masks__(dataset[0].node_features, dataset[0].edge_mat)
 
-        all_node_masks = []
-        all_losses = []
+            optimizer = torch.optim.Adam([self.edge_mask, self.node_feat_mask], lr=self.lr)
 
-        for sample_id in range(len(dataset)):
-            print(sample_id)
-            (node_mask, losses) = self.optimize_loss_for_mask(dataset, PRED, self.forward, self.epochs, sample_id)
-            all_node_masks.append(node_mask)
-            all_losses.append(losses)
+            all_losses = []
 
-        with open("GNNSubNet/saved_values/loss_values.csv", "w", newline="") as loss_file:
-            writer = csv.writer(loss_file)
-            cols = ["Epoch " + str(i) for i in range(0, len(all_losses[0]))]
-            writer.writerow(cols)
-            writer.writerows(all_losses)
+            for epoch in range(1, self.epochs + 1):
+                loss_xx = 0
+                sampSize = 10
+                if epoch % 50 == 1:
+                    ids = np.random.randint(len(dataset), size=sampSize)
 
-        with open("GNNSubNet/saved_values/node_mask_values.csv", "w", newline="") as node_mask_file:
-            writer = csv.writer(node_mask_file)
-            cols = ["Node " + str(i) for i in range(0, n_nodes)]
-            writer.writerow(cols)
-            for mask in all_node_masks:
-                writer.writerow(mask.flatten())
-         
-        return (all_node_masks, all_losses) #self.node_feat_mask.view(-1, 1).detach() #self.edge_mask.detach().sigmoid()
+                optimizer.zero_grad()
+                for dd in ids:
+                    data = dataset[dd]
+                    data_copy = copy(data)
+                    h = data.node_features * self.node_feat_mask.sigmoid()
+                    data_copy.node_features = h
+                    out = self.model([data_copy])
+                    log_logits = self.__to_log_prob__(out)
+                    loss_hit = self.__loss__(-1, log_logits, PRED[dd])
+                    loss_fail = self.__loss__(-1, log_logits, abs(PRED[dd] - 1))
+                    loss_xx = loss_xx + loss_hit
+                loss_xx.backward()
+
+                all_losses.append(loss_xx.item())
+
+                optimizer.step()
+
+            self.save_losses_to_file("GNNSubNet/saved_values/loss_values_gnn-subnet.csv", all_losses, False)
+
+            final_mask = self.node_feat_mask.view(-1,1).detach()
+
+        else:
+            # Run the modified explainer
+
+            all_node_masks = []
+            all_losses = []
+
+            no_samples = len(dataset)
+
+            # Perform Gradient Descent for each sample from the dataset
+            for sample_id in range(no_samples):
+                print("Progress: " + str(sample_id) + "/" + str(no_samples))
+                (node_mask, losses) = self.optimize_loss_for_mask(dataset, PRED, self.forward, self.epochs, sample_id)
+                all_node_masks.append(node_mask)
+                all_losses.append(losses)
+
+            # Save the loss values for plotting purposes
+            self.save_losses_to_file("GNNSubNet/saved_values/loss_values_modified_alg.csv", all_losses)
+
+            # Save the values of all node masks for analysis purposes
+            n_nodes = dataset[0].node_features.size()[0]
+
+            flattened_mask = [mask.flatten() for mask in all_node_masks]
+
+            with open("GNNSubNet/saved_values/node_mask_values.csv", "w", newline="") as node_mask_file:
+                writer = csv.writer(node_mask_file)
+                cols = ["Node " + str(i) for i in range(0, n_nodes)]
+                writer.writerow(cols)
+                writer.writerows(flattened_mask)
+
+            # Obtain a global explanation
+            final_mask = self.aggregate_node_masks(flattened_mask, np.mean)
+
+        return final_mask
+
+    def aggregate_node_masks(self, all_node_masks, aggr_func):
+        """
+        Aggregates all node masks by a given function to obtain a global explanation
+
+        Args:
+            all_node_masks: all the node masks to be aggregated
+            aggr_func: the function to aggregate the node masks by
+        """
+
+        no_nodes = len(all_node_masks[0])
+
+        final_node_mask = []
+
+        for node_index in range(no_nodes):
+            aggr_mask_per_node = aggr_func([node_mask[node_index] for node_mask in all_node_masks])
+            final_node_mask.append(aggr_mask_per_node)
+
+        return final_node_mask
 
     def forward(self, data, node_mask):
         """
@@ -805,10 +868,10 @@ class GNNExplainer(torch.nn.Module):
         Where N is the learned node feature mask. X x sigmoid(N) is "the row-wise multiplication of X, where the rows
         reflect the nodes of a graph and the columns are representing the node features." (Pfeifer et al, 2022)
         Args:
-                data: the graph sample for which to compute the forward function
-                node_mask: the current node mask to be applied to the features
-
+            data: the graph sample for which to compute the forward function
+            node_mask: the current node mask to be applied to the features
         """
+
         h = data.node_features * node_mask.sigmoid()
         data.node_features = h
         out = self.model([data])
@@ -859,6 +922,18 @@ class GNNExplainer(torch.nn.Module):
             losses.append(loss.item())
 
         return self.node_feat_mask.detach().cpu().numpy(), losses
+
+    def save_losses_to_file(self, path, losses, multiple = True):
+        with open(path, "w", newline="") as loss_file:
+            writer = csv.writer(loss_file)
+            if multiple:
+                cols = ["Epoch " + str(i) for i in range(0, len(losses[0]))]
+                writer.writerow(cols)
+                writer.writerows(losses)
+            else:
+                cols = ["Epoch " + str(i) for i in range(0, len(losses))]
+                writer.writerow(cols)
+                writer.writerow(losses)
 
     def explain_graph_modified_s2v_API(self, dataset, param, node_mask=False):
 
