@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from torch_geometric.utils import k_hop_subgraph, to_networkx
 from torch_geometric.loader import DataLoader
 import csv
+import pandas as pd
 
 EPS = 1e-15
 
@@ -818,7 +819,7 @@ class GNNExplainer(torch.nn.Module):
 
             # Perform Gradient Descent for each sample from the dataset
             for sample_id in range(no_samples):
-                print("Progress: " + str(sample_id) + "/" + str(no_samples))
+                # print("Progress: " + str(sample_id) + "/" + str(no_samples))
                 (node_mask, losses) = self.optimize_loss_for_mask(dataset, PRED, self.forward, self.epochs, sample_id)
                 all_node_masks.append(node_mask)
                 all_losses.append(losses)
@@ -829,7 +830,9 @@ class GNNExplainer(torch.nn.Module):
             # Save the values of all node masks for analysis purposes
             n_nodes = dataset[0].node_features.size()[0]
 
-            flattened_mask = [mask.flatten() for mask in all_node_masks]
+            print(all_node_masks)
+
+            flattened_mask = [mask.cpu().numpy().flatten() for mask in all_node_masks]
 
             with open("GNNSubNet/saved_values/node_mask_values.csv", "w", newline="") as node_mask_file:
                 writer = csv.writer(node_mask_file)
@@ -838,7 +841,11 @@ class GNNExplainer(torch.nn.Module):
                 writer.writerows(flattened_mask)
 
             # Obtain a global explanation
-            final_mask = self.aggregate_node_masks(flattened_mask, np.mean)
+
+            stacked_masks = torch.stack(all_node_masks)
+
+            # Calculate the mean along dimension 0 (column-wise mean)
+            final_mask = torch.mean(stacked_masks, dim=0)
 
         return final_mask
 
@@ -848,7 +855,7 @@ class GNNExplainer(torch.nn.Module):
 
         Args:
             all_node_masks: all the node masks to be aggregated
-            aggr_func: the function to aggregate the node masks by
+            aggr_func: the function to aggregate the node masks by (should aggregate a 1-d array)
         """
 
         no_nodes = len(all_node_masks[0])
@@ -857,6 +864,28 @@ class GNNExplainer(torch.nn.Module):
 
         for node_index in range(no_nodes):
             aggr_mask_per_node = aggr_func([node_mask[node_index] for node_mask in all_node_masks])
+            final_node_mask.append(aggr_mask_per_node)
+
+        return final_node_mask
+
+    def aggregate_masks_from_file(self, file_path, aggr_func):
+        """
+        Aggregates all node masks by a given function to obtain a global explanation. In this case, the node masks are
+        read from a csv file.
+
+        Args:
+            file_path: contains the path to the file containing the node masks (should be a .csv file)
+            aggr_func: the function to aggregate the node masks by (should aggregate a 1-d array)
+        """
+
+        all_node_masks = pd.read_csv(file_path)
+
+        no_nodes = len(all_node_masks.iloc[0])
+
+        final_node_mask = []
+
+        for node_index in range(no_nodes):
+            aggr_mask_per_node = aggr_func(all_node_masks["Node " + str(node_index)])
             final_node_mask.append(aggr_mask_per_node)
 
         return final_node_mask
@@ -921,7 +950,7 @@ class GNNExplainer(torch.nn.Module):
 
             losses.append(loss.item())
 
-        return self.node_feat_mask.detach().cpu().numpy(), losses
+        return self.node_feat_mask.detach(), losses
 
     def save_losses_to_file(self, path, losses, multiple = True):
         with open(path, "w", newline="") as loss_file:
