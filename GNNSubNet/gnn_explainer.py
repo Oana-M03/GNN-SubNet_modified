@@ -830,8 +830,6 @@ class GNNExplainer(torch.nn.Module):
             # Save the values of all node masks for analysis purposes
             n_nodes = dataset[0].node_features.size()[0]
 
-            print(all_node_masks)
-
             flattened_mask = [mask.cpu().numpy().flatten() for mask in all_node_masks]
 
             with open("GNNSubNet/saved_values/node_mask_values.csv", "w", newline="") as node_mask_file:

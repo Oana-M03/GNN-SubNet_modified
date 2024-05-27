@@ -1263,6 +1263,8 @@ class GNNSubNet(object):
         ems = []
         NODE_MASK = list()
 
+        print("GNN-SubNet: " + str(gnn_subnet))
+
         for idx in range(no_of_runs):
             print(f'Explainer::Iteration {idx+1} of {no_of_runs}')
             exp = GNNExplainer(model, epochs=300)
