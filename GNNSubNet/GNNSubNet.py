@@ -29,6 +29,7 @@ from torch_geometric.loader import DataLoader
 from .gnn_training_utils import check_if_graph_is_connected, pass_data_iteratively
 from .dataset import generate, load_OMICS_dataset, convert_to_s2vgraph
 from .gnn_explainer import GNNExplainer
+from .graph_dataset import GraphDataset
 from .graphcnn  import GraphCNN
 from .graphcheb import GraphCheb, ChebConvNet, test_model_acc, test_model
 
@@ -86,6 +87,7 @@ class GNNSubNet(object):
         self.true_class = None
         self.gene_names = gene_names
         self.s2v_test_dataset = None
+        self.test_dataset = None
         self.edges =  np.transpose(np.array(dataset[0].edge_index))
 
         self.edge_mask = None
@@ -916,6 +918,7 @@ class GNNSubNet(object):
 
         s2v_train_dataset = convert_to_s2vgraph(train_dataset_list)
         s2v_test_dataset  = convert_to_s2vgraph(test_dataset_list)
+        self.test_dataset = test_dataset_list
 
 
         # TRAIN GNN -------------------------------------------------- #
@@ -1716,27 +1719,6 @@ class GNNSubNet(object):
         else:
             test_graph = input_graph
         s2v_test_graph = convert_to_s2vgraph(GraphDataset([test_graph]))
-        model = self.model
-        model.eval()
-        output = pass_data_iteratively(model, s2v_test_graph)
-        predicted_class = output.max(1, keepdim=True)[1]
-        return predicted_class
-
-    def predict_helper(self, input_graph, perturbed_features=None):
-        """
-        Helper method for evaluation:
-        finds the model's predicted class on the given input graph
-        or (if provided) on the perturbed input graph
-        """
-        if perturbed_features is not None:
-            # GNNSubNet has the model tensors on the CPU by default
-            test_graph = Data(x=torch.tensor(perturbed_features).float().to("cpu"),
-                                    edge_index = input_graph.edge_index,
-                                    y = input_graph.y
-                            )
-        else:
-            test_graph = input_graph
-        s2v_test_graph  = convert_to_s2vgraph(GraphDataset([test_graph]))
         model = self.model
         model.eval()
         output = pass_data_iteratively(model, s2v_test_graph)
