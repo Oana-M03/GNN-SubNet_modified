@@ -172,5 +172,6 @@ Thumbs.db
 .Rhistory
 
 # results
-GNNSubNet/datasets
+GNNSubNet/datasets/synthetic
 TCGA
+GNNSubNet/saved_values
