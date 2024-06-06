@@ -29,6 +29,7 @@ from torch_geometric.loader import DataLoader
 from .gnn_training_utils import check_if_graph_is_connected, pass_data_iteratively
 from .dataset import generate, load_OMICS_dataset, convert_to_s2vgraph
 from .gnn_explainer import GNNExplainer
+from .graph_dataset import GraphDataset
 from .graphcnn  import GraphCNN
 from .graphcheb import GraphCheb, ChebConvNet, test_model_acc, test_model
 
@@ -86,6 +87,7 @@ class GNNSubNet(object):
         self.true_class = None
         self.gene_names = gene_names
         self.s2v_test_dataset = None
+        self.test_dataset = None
         self.edges =  np.transpose(np.array(dataset[0].edge_index))
 
         self.edge_mask = None
@@ -126,13 +128,13 @@ class GNNSubNet(object):
             self.classifier="chebnet"
 
 
-    def explain(self, n_runs=1, classifier="graphcnn", communities=True, gnn_subnet=False):
+    def explain(self, n_runs=1, classifier="graphcnn", communities=True, gnn_subnet=False, quantile_aggregation=False, quantile=0.5):
 
         if self.classifier=="chebconv":
             self.explain_chebconv(n_runs=n_runs, communities=communities)
 
         if self.classifier=="graphcnn":
-            self.explain_graphcnn(n_runs=n_runs, communities=communities, gnn_subnet=gnn_subnet)
+            self.explain_graphcnn(n_runs=n_runs, communities=communities, gnn_subnet=gnn_subnet, quantile_aggregation=quantile_aggregation, quantile=quantile)
     
         if self.classifier=="graphcheb":
             self.explain_graphcheb(n_runs=n_runs, communities=communities)
@@ -916,6 +918,7 @@ class GNNSubNet(object):
 
         s2v_train_dataset = convert_to_s2vgraph(train_dataset_list)
         s2v_test_dataset  = convert_to_s2vgraph(test_dataset_list)
+        self.test_dataset = test_dataset_list
 
 
         # TRAIN GNN -------------------------------------------------- #
@@ -1239,7 +1242,7 @@ class GNNSubNet(object):
 
         self._explainer_run = True    
 
-    def explain_graphcnn(self, n_runs=10, explainer_lambda=0.8, communities=True, save_to_disk=False, gnn_subnet = False):
+    def explain_graphcnn(self, n_runs=10, explainer_lambda=0.8, communities=True, save_to_disk=False, gnn_subnet = False, quantile_aggregation=False, quantile=0.5):
         """
         Explain the model's results.
         """
@@ -1263,10 +1266,12 @@ class GNNSubNet(object):
         ems = []
         NODE_MASK = list()
 
+        print("GNN-SubNet: " + str(gnn_subnet))
+
         for idx in range(no_of_runs):
             print(f'Explainer::Iteration {idx+1} of {no_of_runs}')
             exp = GNNExplainer(model, epochs=300)
-            em = exp.explain_graph_modified_s2v(s2v_test_dataset, lamda, gnn_subnet)
+            em = exp.explain_graph_modified_s2v(s2v_test_dataset, lamda, gnn_subnet, quantile_aggregation, quantile)
             #Path(f"{path}/{sigma}/modified_gnn").mkdir(parents=True, exist_ok=True)
             gnn_feature_masks = np.reshape(em, (len(em), -1))
             NODE_MASK.append(np.array(gnn_feature_masks.sigmoid()))
@@ -1714,27 +1719,6 @@ class GNNSubNet(object):
         else:
             test_graph = input_graph
         s2v_test_graph = convert_to_s2vgraph(GraphDataset([test_graph]))
-        model = self.model
-        model.eval()
-        output = pass_data_iteratively(model, s2v_test_graph)
-        predicted_class = output.max(1, keepdim=True)[1]
-        return predicted_class
-
-    def predict_helper(self, input_graph, perturbed_features=None):
-        """
-        Helper method for evaluation:
-        finds the model's predicted class on the given input graph
-        or (if provided) on the perturbed input graph
-        """
-        if perturbed_features is not None:
-            # GNNSubNet has the model tensors on the CPU by default
-            test_graph = Data(x=torch.tensor(perturbed_features).float().to("cpu"),
-                                    edge_index = input_graph.edge_index,
-                                    y = input_graph.y
-                            )
-        else:
-            test_graph = input_graph
-        s2v_test_graph  = convert_to_s2vgraph(GraphDataset([test_graph]))
         model = self.model
         model.eval()
         output = pass_data_iteratively(model, s2v_test_graph)

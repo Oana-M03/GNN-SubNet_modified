@@ -157,16 +157,6 @@ class GNNExplainer(torch.nn.Module):
 
         return loss
 
-    def __loss_singular__(self, log_logits, node_mask_val, pred_label):
-        loss = -log_logits[0, pred_label]
-
-        m = node_mask_val.sigmoid()
-        loss = loss + self.coeffs['node_feat_size'] * m
-        ent = -m * torch.log(m + EPS) - (1 - m) * torch.log(1 - m + EPS)
-        loss = loss + self.coeffs['node_feat_ent'] * ent
-
-        return loss
-
     def __to_log_prob__(self, x: torch.Tensor) -> torch.Tensor:
         x = x.log_softmax(dim=-1) if self.return_type == 'raw' else x
         x = x.log() if self.return_type == 'prob' else x
@@ -744,7 +734,7 @@ class GNNExplainer(torch.nn.Module):
 
         return self.node_feat_mask.view(-1,1).detach() #self.edge_mask.detach().sigmoid()
     
-    def explain_graph_modified_s2v(self, dataset, param, gnn_subnet = False):
+    def explain_graph_modified_s2v(self, dataset, param, gnn_subnet = False, quantile_aggregation = False, quantile = 0.5):
         """
         Runs the explainer on the input dataset and generates a global explanation, i.e. a node mask that takes into
         account all graph instances of the dataset.
@@ -805,7 +795,7 @@ class GNNExplainer(torch.nn.Module):
 
                 optimizer.step()
 
-            self.save_losses_to_file("GNNSubNet/saved_values/loss_values_gnn-subnet.csv", all_losses, False)
+            self.save_losses_to_file("../GNNSubNet/saved_values/loss_values_gnn-subnet.csv", all_losses, False)
 
             final_mask = self.node_feat_mask.view(-1,1).detach()
 
@@ -819,22 +809,19 @@ class GNNExplainer(torch.nn.Module):
 
             # Perform Gradient Descent for each sample from the dataset
             for sample_id in range(no_samples):
-                # print("Progress: " + str(sample_id) + "/" + str(no_samples))
                 (node_mask, losses) = self.optimize_loss_for_mask(dataset, PRED, self.forward, self.epochs, sample_id)
                 all_node_masks.append(node_mask)
                 all_losses.append(losses)
 
             # Save the loss values for plotting purposes
-            self.save_losses_to_file("GNNSubNet/saved_values/loss_values_modified_alg.csv", all_losses)
+            self.save_losses_to_file("../GNNSubNet/saved_values/loss_values_modified_alg.csv", all_losses)
 
             # Save the values of all node masks for analysis purposes
             n_nodes = dataset[0].node_features.size()[0]
 
-            print(all_node_masks)
-
             flattened_mask = [mask.cpu().numpy().flatten() for mask in all_node_masks]
 
-            with open("GNNSubNet/saved_values/node_mask_values.csv", "w", newline="") as node_mask_file:
+            with open("../GNNSubNet/saved_values/node_mask_values.csv", "w", newline="") as node_mask_file:
                 writer = csv.writer(node_mask_file)
                 cols = ["Node " + str(i) for i in range(0, n_nodes)]
                 writer.writerow(cols)
@@ -844,8 +831,12 @@ class GNNExplainer(torch.nn.Module):
 
             stacked_masks = torch.stack(all_node_masks)
 
-            # Calculate the mean along dimension 0 (column-wise mean)
-            final_mask = torch.mean(stacked_masks, dim=0)
+            if quantile_aggregation:
+                # Aggregate the masks by taking the specified quantile (column-wise)
+                final_mask = torch.quantile(stacked_masks, q=quantile, dim=0)
+            else:
+                # Calculate the mean along dimension 0 (column-wise mean)
+                final_mask = torch.mean(stacked_masks, dim=0)
 
         return final_mask
 
