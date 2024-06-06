@@ -128,13 +128,13 @@ class GNNSubNet(object):
             self.classifier="chebnet"
 
 
-    def explain(self, n_runs=1, classifier="graphcnn", communities=True, gnn_subnet=False):
+    def explain(self, n_runs=1, classifier="graphcnn", communities=True, gnn_subnet=False, quantile_aggregation=False, quantile=0.5):
 
         if self.classifier=="chebconv":
             self.explain_chebconv(n_runs=n_runs, communities=communities)
 
         if self.classifier=="graphcnn":
-            self.explain_graphcnn(n_runs=n_runs, communities=communities, gnn_subnet=gnn_subnet)
+            self.explain_graphcnn(n_runs=n_runs, communities=communities, gnn_subnet=gnn_subnet, quantile_aggregation=quantile_aggregation, quantile=quantile)
     
         if self.classifier=="graphcheb":
             self.explain_graphcheb(n_runs=n_runs, communities=communities)
@@ -1242,7 +1242,7 @@ class GNNSubNet(object):
 
         self._explainer_run = True    
 
-    def explain_graphcnn(self, n_runs=10, explainer_lambda=0.8, communities=True, save_to_disk=False, gnn_subnet = False):
+    def explain_graphcnn(self, n_runs=10, explainer_lambda=0.8, communities=True, save_to_disk=False, gnn_subnet = False, quantile_aggregation=False, quantile=0.5):
         """
         Explain the model's results.
         """
@@ -1271,7 +1271,7 @@ class GNNSubNet(object):
         for idx in range(no_of_runs):
             print(f'Explainer::Iteration {idx+1} of {no_of_runs}')
             exp = GNNExplainer(model, epochs=300)
-            em = exp.explain_graph_modified_s2v(s2v_test_dataset, lamda, gnn_subnet)
+            em = exp.explain_graph_modified_s2v(s2v_test_dataset, lamda, gnn_subnet, quantile_aggregation, quantile)
             #Path(f"{path}/{sigma}/modified_gnn").mkdir(parents=True, exist_ok=True)
             gnn_feature_masks = np.reshape(em, (len(em), -1))
             NODE_MASK.append(np.array(gnn_feature_masks.sigmoid()))

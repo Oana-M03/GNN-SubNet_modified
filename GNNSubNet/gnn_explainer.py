@@ -734,7 +734,7 @@ class GNNExplainer(torch.nn.Module):
 
         return self.node_feat_mask.view(-1,1).detach() #self.edge_mask.detach().sigmoid()
     
-    def explain_graph_modified_s2v(self, dataset, param, gnn_subnet = False):
+    def explain_graph_modified_s2v(self, dataset, param, gnn_subnet = False, quantile_aggregation = False, quantile = 0.5):
         """
         Runs the explainer on the input dataset and generates a global explanation, i.e. a node mask that takes into
         account all graph instances of the dataset.
@@ -831,8 +831,12 @@ class GNNExplainer(torch.nn.Module):
 
             stacked_masks = torch.stack(all_node_masks)
 
-            # Calculate the mean along dimension 0 (column-wise mean)
-            final_mask = torch.mean(stacked_masks, dim=0)
+            if quantile_aggregation:
+                # Aggregate the masks by taking the specified quantile (column-wise)
+                final_mask = torch.quantile(stacked_masks, q=quantile, dim=0)
+            else:
+                # Calculate the mean along dimension 0 (column-wise mean)
+                final_mask = torch.mean(stacked_masks, dim=0)
 
         return final_mask
 
